@@ -19,13 +19,27 @@ import {
   addComment,
   deleteComment,
   searchRepos,
+  isUserBanned,
+  banUser,
+  unbanUser,
+  deleteCommentAdmin,
+  getAdminStats,
+  getAllUsers,
+  getAllComments,
+  getModLog,
+  getBlockedWords,
+  addBlockedWord,
+  removeBlockedWord,
 } from './db.js'
 import {
   createSession,
   getSession,
   getGitHubClientId,
   getGitHubClientSecret,
+  isAdmin,
+  type SessionUser,
 } from './auth.js'
+import { checkComment } from './automod.js'
 import { notifyRepGiven, notifyComment } from './discord-webhook.js'
 
 const fastify = Fastify({
@@ -49,7 +63,11 @@ await fastify.register(fastifyWebsocket)
 // WebSocket subscriptions: repo key -> set of connected sockets
 const repoSubscribers = new Map<string, Set<WebSocket>>()
 
-function broadcastRepUpdate(owner: string, repo: string, reputation: { positive: number; negative: number }) {
+function broadcastRepUpdate(
+  owner: string,
+  repo: string,
+  reputation: { positive: number; negative: number }
+) {
   const key = `${owner}/${repo}`
   const subs = repoSubscribers.get(key)
   if (!subs) return
@@ -102,6 +120,12 @@ fastify.get('/ws/repos/:owner/:repo', { websocket: true }, (socket, request) => 
         return
       }
 
+      // Ban check
+      if (await isUserBanned(session.id)) {
+        socket.send(JSON.stringify({ type: 'error', error: 'You are banned' }))
+        return
+      }
+
       if (parsed.action === 'vote') {
         if (!parsed.type) {
           socket.send(JSON.stringify({ type: 'error', error: 'Missing vote type' }))
@@ -114,7 +138,14 @@ fastify.get('/ws/repos/:owner/:repo', { websocket: true }, (socket, request) => 
         const entry = await addOrUpdateReputation(owner, repo, session.id, parsed.type)
         const reputation = await getRepoReputation(owner, repo)
         broadcastRepUpdate(owner, repo, reputation)
-        await notifyRepGiven(owner, repo, user.username, user.avatar_url, parsed.type, reputation.positive - reputation.negative)
+        await notifyRepGiven(
+          owner,
+          repo,
+          user.username,
+          user.avatar_url,
+          parsed.type,
+          reputation.positive - reputation.negative
+        )
         socket.send(JSON.stringify({ type: 'vote_ok', entry, userRep: { type: parsed.type } }))
       } else if (parsed.action === 'remove') {
         await deleteReputation(session.id, owner, repo)
@@ -199,9 +230,7 @@ async function authGithubHandler(request: FastifyRequest, reply: FastifyReply) {
       `${process.env.PUBLIC_APP_URL || 'http://localhost:5173'}/api/auth/github/callback`,
   })
 
-  return reply.redirect(
-    `https://github.com/login/oauth/authorize?${params.toString()}`
-  )
+  return reply.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`)
 }
 
 async function authCallbackHandler(request: FastifyRequest, reply: FastifyReply) {
@@ -212,21 +241,18 @@ async function authCallbackHandler(request: FastifyRequest, reply: FastifyReply)
   }
 
   try {
-    const tokenResponse = await fetch(
-      'https://github.com/login/oauth/access_token',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          client_id: getGitHubClientId(),
-          client_secret: getGitHubClientSecret(),
-          code,
-        }),
-      }
-    )
+    const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        client_id: getGitHubClientId(),
+        client_secret: getGitHubClientSecret(),
+        code,
+      }),
+    })
 
     const tokenData = await tokenResponse.json()
 
@@ -243,11 +269,7 @@ async function authCallbackHandler(request: FastifyRequest, reply: FastifyReply)
 
     const userData = await userResponse.json()
 
-    const user = await upsertUser(
-      userData.id,
-      userData.login,
-      userData.avatar_url
-    )
+    const user = await upsertUser(userData.id, userData.login, userData.avatar_url)
 
     const token = await createSession({
       id: user.id,
@@ -284,7 +306,7 @@ fastify.get('/api/auth/me', async (request, reply) => {
     return { user: null }
   }
 
-  return { user: session }
+  return { user: { ...session, is_admin: session.is_admin || false } }
 })
 
 fastify.get('/api/search', async (request, reply) => {
@@ -328,17 +350,17 @@ fastify.post('/api/repos/:owner/:repo/rep', async (request, reply) => {
 
   const user = await getUserById(session.id)
   if (!user) {
-    return reply
-      .status(401)
-      .send({ error: 'Session expired. Please sign in again.' })
+    return reply.status(401).send({ error: 'Session expired. Please sign in again.' })
+  }
+
+  if (await isUserBanned(session.id)) {
+    return reply.status(403).send({ error: 'You are banned' })
   }
 
   const { owner, repo } = request.params as { owner: string; repo: string }
 
   if (!(await repoExists(owner, repo))) {
-    return reply
-      .status(404)
-      .send({ error: 'Repository not found on GitHub' })
+    return reply.status(404).send({ error: 'Repository not found on GitHub' })
   }
 
   try {
@@ -361,9 +383,7 @@ fastify.post('/api/repos/:owner/:repo/rep', async (request, reply) => {
     return { entry }
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return reply
-        .status(400)
-        .send({ error: 'Invalid input', details: error.errors })
+      return reply.status(400).send({ error: 'Invalid input', details: error.errors })
     }
     console.error('POST /rep error:', error)
     return reply.status(500).send({ error: 'Internal server error' })
@@ -380,9 +400,7 @@ fastify.delete('/api/repos/:owner/:repo/rep', async (request, reply) => {
 
   const user = await getUserById(session.id)
   if (!user) {
-    return reply
-      .status(401)
-      .send({ error: 'Session expired. Please sign in again.' })
+    return reply.status(401).send({ error: 'Session expired. Please sign in again.' })
   }
 
   const { owner, repo } = request.params as { owner: string; repo: string }
@@ -403,9 +421,11 @@ fastify.post('/api/repos/:owner/:repo/comments', async (request, reply) => {
 
   const user = await getUserById(session.id)
   if (!user) {
-    return reply
-      .status(401)
-      .send({ error: 'Session expired. Please sign in again.' })
+    return reply.status(401).send({ error: 'Session expired. Please sign in again.' })
+  }
+
+  if (await isUserBanned(session.id)) {
+    return reply.status(403).send({ error: 'You are banned' })
   }
 
   const { owner, repo } = request.params as { owner: string; repo: string }
@@ -413,6 +433,12 @@ fastify.post('/api/repos/:owner/:repo/comments', async (request, reply) => {
   try {
     const body = request.body as Record<string, unknown>
     const parsed = commentSchema.parse(body)
+
+    // Auto-moderation
+    const modCheck = await checkComment(session.id, parsed.content)
+    if (!modCheck.allowed) {
+      return reply.status(400).send({ error: modCheck.reason })
+    }
 
     const comment = await addComment(owner, repo, session.id, parsed.content)
     const comments = await getRepoComments(owner, repo)
@@ -429,9 +455,7 @@ fastify.post('/api/repos/:owner/:repo/comments', async (request, reply) => {
     return { comment }
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return reply
-        .status(400)
-        .send({ error: 'Invalid input', details: error.errors })
+      return reply.status(400).send({ error: 'Invalid input', details: error.errors })
     }
     console.error('POST /comments error:', error)
     return reply.status(500).send({ error: 'Internal server error' })
@@ -448,9 +472,7 @@ fastify.delete('/api/repos/:owner/:repo/comments', async (request, reply) => {
 
   const user = await getUserById(session.id)
   if (!user) {
-    return reply
-      .status(401)
-      .send({ error: 'Session expired. Please sign in again.' })
+    return reply.status(401).send({ error: 'Session expired. Please sign in again.' })
   }
 
   try {
@@ -465,12 +487,103 @@ fastify.delete('/api/repos/:owner/:repo/comments', async (request, reply) => {
     return { success: true }
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return reply
-        .status(400)
-        .send({ error: 'Invalid input', details: error.errors })
+      return reply.status(400).send({ error: 'Invalid input', details: error.errors })
     }
     return reply.status(500).send({ error: 'Internal server error' })
   }
+})
+
+// Admin helper
+async function requireAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<SessionUser | null> {
+  const token = request.cookies.gitrep_session
+  const session = await getSession(token)
+  if (!session || !session.is_admin) {
+    reply.status(403).send({ error: 'Forbidden' })
+    return null
+  }
+  return session
+}
+
+// Admin routes
+fastify.get('/api/admin/stats', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  return await getAdminStats()
+})
+
+fastify.get('/api/admin/users', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  const { page, q } = request.query as { page?: string; q?: string }
+  return await getAllUsers(parseInt(page || '1'), q)
+})
+
+fastify.post('/api/admin/users/:id/ban', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  const { id } = request.params as { id: string }
+  const { reason } = (request.body as { reason?: string }) || {}
+  await banUser(parseInt(id), session.id, reason)
+  return { success: true }
+})
+
+fastify.delete('/api/admin/users/:id/ban', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  const { id } = request.params as { id: string }
+  await unbanUser(parseInt(id), session.id)
+  return { success: true }
+})
+
+fastify.get('/api/admin/comments', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  const { page, q } = request.query as { page?: string; q?: string }
+  return await getAllComments(parseInt(page || '1'), q)
+})
+
+fastify.delete('/api/admin/comments/:id', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  const { id } = request.params as { id: string }
+  const { reason } = (request.body as { reason?: string }) || {}
+  const deleted = await deleteCommentAdmin(parseInt(id), session.id, reason)
+  if (!deleted) return reply.status(404).send({ error: 'Comment not found' })
+  return { success: true }
+})
+
+fastify.get('/api/admin/blocked-words', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  return { words: await getBlockedWords() }
+})
+
+fastify.post('/api/admin/blocked-words', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  const { word } = request.body as { word: string }
+  if (!word || !word.trim()) return reply.status(400).send({ error: 'Word is required' })
+  await addBlockedWord(word)
+  return { success: true }
+})
+
+fastify.delete('/api/admin/blocked-words', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  const { word } = request.body as { word: string }
+  if (!word) return reply.status(400).send({ error: 'Word is required' })
+  await removeBlockedWord(word)
+  return { success: true }
+})
+
+fastify.get('/api/admin/modlog', async (request, reply) => {
+  const session = await requireAdmin(request, reply)
+  if (!session) return
+  const { page } = request.query as { page?: string }
+  return await getModLog(parseInt(page || '1'))
 })
 
 // Serve static frontend in production

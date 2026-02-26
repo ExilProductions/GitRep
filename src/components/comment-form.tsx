@@ -10,12 +10,7 @@ interface CommentFormProps {
   onUpdate: () => void
 }
 
-export function CommentForm({
-  owner,
-  repo,
-  user,
-  onUpdate,
-}: CommentFormProps) {
+export function CommentForm({ owner, repo, user, onUpdate }: CommentFormProps) {
   const [content, setContent] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -60,16 +55,10 @@ export function CommentForm({
         className="text-sm resize-none"
       />
       <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          onClick={handleSubmit}
-          disabled={!content.trim() || submitting}
-        >
+        <Button size="sm" onClick={handleSubmit} disabled={!content.trim() || submitting}>
           {submitting ? 'Posting...' : 'Comment'}
         </Button>
-        <span className="text-xs text-muted-foreground">
-          {content.length}/500
-        </span>
+        <span className="text-xs text-muted-foreground">{content.length}/500</span>
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}
     </div>

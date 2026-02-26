@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import logo from '@/assets/gitrep-icon.png'
 import { useAuth } from '@/lib/use-auth'
 import { Input } from '@/components/ui/input'
@@ -88,11 +88,7 @@ export default function Home() {
     <main className="flex min-h-screen flex-col items-center justify-center px-4">
       <div className="w-full max-w-md flex flex-col items-center gap-6">
         <div className="flex flex-col items-center gap-3">
-          <img
-            src={logo}
-            alt="gitrep logo"
-            className="w-24 h-24"
-          />
+          <img src={logo} alt="gitrep logo" className="w-24 h-24" />
           <h1 className="text-3xl font-mono font-bold tracking-tight">gitrep</h1>
         </div>
         <p className="text-sm text-muted-foreground text-center">
@@ -155,9 +151,16 @@ export default function Home() {
           ) : user ? (
             <div className="flex items-center gap-3">
               <span className="text-xs text-muted-foreground">
-                Signed in as{' '}
-                <span className="font-mono text-foreground">{user.username}</span>
+                Signed in as <span className="font-mono text-foreground">{user.username}</span>
               </span>
+              {user.is_admin && (
+                <Link
+                  to="/admin"
+                  className="text-xs text-muted-foreground underline hover:text-foreground"
+                >
+                  Admin
+                </Link>
+              )}
               <button
                 onClick={logout}
                 className="text-xs text-muted-foreground underline hover:text-foreground"

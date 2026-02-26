@@ -9,23 +9,14 @@ interface RepActionsProps {
   onRemove: () => void
 }
 
-export function RepActions({
-  user,
-  userRep,
-  onLogin,
-  onVote,
-  onRemove,
-}: RepActionsProps) {
+export function RepActions({ user, userRep, onLogin, onVote, onRemove }: RepActionsProps) {
   const repType = userRep?.type ?? null
 
   if (!user) {
     return (
       <div className="border border-border rounded-md p-4">
         <p className="text-sm text-muted-foreground">
-          <button
-            onClick={onLogin}
-            className="underline hover:text-foreground"
-          >
+          <button onClick={onLogin} className="underline hover:text-foreground">
             Sign in with GitHub
           </button>{' '}
           to vote.
@@ -42,9 +33,7 @@ export function RepActions({
           size="sm"
           onClick={() => onVote('positive')}
           className={
-            repType === 'positive'
-              ? 'bg-success text-success-foreground hover:bg-success/90'
-              : ''
+            repType === 'positive' ? 'bg-success text-success-foreground hover:bg-success/90' : ''
           }
         >
           rep+

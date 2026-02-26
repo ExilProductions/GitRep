@@ -54,14 +54,14 @@ export default function RepoPage() {
 
   const handleRepUpdate = useCallback(
     (reputation: { positive: number; negative: number }) => {
-      mutate((current) => current ? { ...current, reputation } : current, false)
+      mutate((current) => (current ? { ...current, reputation } : current), false)
     },
     [mutate]
   )
 
   const handleVoteOk = useCallback(
     (userRep: { type: 'positive' | 'negative' } | null) => {
-      mutate((current) => current ? { ...current, userRep } : current, false)
+      mutate((current) => (current ? { ...current, userRep } : current), false)
     },
     [mutate]
   )
@@ -110,9 +110,15 @@ export default function RepoPage() {
           </Link>
           {authLoading ? null : user ? (
             <div className="flex items-center gap-3">
-              <span className="text-xs text-muted-foreground font-mono">
-                {user.username}
-              </span>
+              <span className="text-xs text-muted-foreground font-mono">{user.username}</span>
+              {user.is_admin && (
+                <Link
+                  to="/admin"
+                  className="text-xs text-muted-foreground underline hover:text-foreground"
+                >
+                  admin
+                </Link>
+              )}
               <button
                 onClick={logout}
                 className="text-xs text-muted-foreground underline hover:text-foreground"
@@ -155,12 +161,8 @@ export default function RepoPage() {
               {score > 0 ? `+${score}` : score}
             </span>
             <div className="flex items-center gap-3 text-xs text-muted-foreground font-mono">
-              <span className="text-success">
-                +{data?.reputation.positive ?? 0}
-              </span>
-              <span className="text-destructive">
-                -{data?.reputation.negative ?? 0}
-              </span>
+              <span className="text-success">+{data?.reputation.positive ?? 0}</span>
+              <span className="text-destructive">-{data?.reputation.negative ?? 0}</span>
             </div>
           </div>
         )}
@@ -173,12 +175,7 @@ export default function RepoPage() {
           onRemove={sendRemove}
         />
 
-        <CommentForm
-          owner={owner}
-          repo={repo}
-          user={user}
-          onUpdate={() => mutate()}
-        />
+        <CommentForm owner={owner} repo={repo} user={user} onUpdate={() => mutate()} />
 
         <CommentList
           owner={owner}

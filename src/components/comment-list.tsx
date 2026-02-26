@@ -30,15 +30,11 @@ export function CommentList({
   const [deletingId, setDeletingId] = useState<number | null>(null)
 
   if (isLoading) {
-    return (
-      <div className="text-sm text-muted-foreground">Loading comments...</div>
-    )
+    return <div className="text-sm text-muted-foreground">Loading comments...</div>
   }
 
   if (comments.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">No comments yet.</p>
-    )
+    return <p className="text-sm text-muted-foreground">No comments yet.</p>
   }
 
   async function handleDelete(commentId: number) {
@@ -66,10 +62,7 @@ export function CommentList({
       </h2>
       <div className="flex flex-col gap-3">
         {comments.map((c) => (
-          <div
-            key={c.id}
-            className="border border-border rounded-md p-3 flex flex-col gap-2"
-          >
+          <div key={c.id} className="border border-border rounded-md p-3 flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 {c.avatar_url && (

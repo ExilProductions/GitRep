@@ -15,13 +15,9 @@ function getJwtSecretKey(): Uint8Array {
     const secret = getJwtSecret()
     if (!secret) {
       if (process.env.NODE_ENV === 'production') {
-        throw new Error(
-          'JWT_SECRET environment variable is required in production'
-        )
+        throw new Error('JWT_SECRET environment variable is required in production')
       }
-      JWT_SECRET = new TextEncoder().encode(
-        'gitrep-dev-secret-do-not-use-in-production'
-      )
+      JWT_SECRET = new TextEncoder().encode('gitrep-dev-secret-do-not-use-in-production')
     } else {
       JWT_SECRET = secret
     }
@@ -40,11 +36,21 @@ export function getGitHubClientSecret(): string {
   return GITHUB_CLIENT_SECRET
 }
 
+export function isAdmin(username: string): boolean {
+  const admins = process.env.ADMIN_USERS || ''
+  return admins
+    .split(',')
+    .map((u) => u.trim().toLowerCase())
+    .filter(Boolean)
+    .includes(username.toLowerCase())
+}
+
 export interface SessionUser {
   id: number
   github_id: number
   username: string
   avatar_url: string | null
+  is_admin?: boolean
 }
 
 export async function createSession(user: SessionUser): Promise<string> {
@@ -53,6 +59,7 @@ export async function createSession(user: SessionUser): Promise<string> {
     github_id: user.github_id,
     username: user.username,
     avatar_url: user.avatar_url,
+    is_admin: isAdmin(user.username),
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime('7d')
@@ -72,6 +79,7 @@ export async function getSession(token: string | undefined): Promise<SessionUser
       github_id: payload.github_id as number,
       username: payload.username as string,
       avatar_url: payload.avatar_url as string | null,
+      is_admin: payload.is_admin as boolean | undefined,
     }
   } catch {
     return null

@@ -7,6 +7,7 @@ export interface AuthUser {
   github_id: number
   username: string
   avatar_url: string | null
+  is_admin: boolean
 }
 
 export async function handleUnauthorized() {

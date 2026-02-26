@@ -50,6 +50,25 @@ async function initDb(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_comments_repo ON comments(repo_owner, repo_name);
       CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id);
       CREATE INDEX IF NOT EXISTS idx_reputation_repo_search ON reputation(lower(repo_owner), lower(repo_name));
+
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMP DEFAULT NULL;
+
+      CREATE TABLE IF NOT EXISTS blocked_words (
+        id SERIAL PRIMARY KEY,
+        word TEXT UNIQUE NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS mod_log (
+        id SERIAL PRIMARY KEY,
+        admin_user_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        target_user_id INTEGER,
+        target_comment_id INTEGER,
+        reason TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (admin_user_id) REFERENCES users(id)
+      );
     `)
     initialized = true
   } finally {
@@ -160,34 +179,12 @@ export async function addOrUpdateReputation(
   return result.rows[0]
 }
 
-export async function deleteReputation(
-  userId: number,
-  owner: string,
-  name: string
-): Promise<void> {
+export async function deleteReputation(userId: number, owner: string, name: string): Promise<void> {
   await initDb()
   await pool.query(
     'DELETE FROM reputation WHERE user_id = $1 AND repo_owner = $2 AND repo_name = $3',
     [userId, owner, name]
   )
-}
-
-export async function getRepoVotes(
-  owner: string,
-  name: string,
-  limit = 100
-): Promise<ReputationEntry[]> {
-  await initDb()
-  const result = await pool.query(
-    `SELECT r.*, u.username, u.avatar_url
-     FROM reputation r
-     JOIN users u ON r.user_id = u.id
-     WHERE r.repo_owner = $1 AND r.repo_name = $2
-     ORDER BY r.created_at DESC
-     LIMIT $3`,
-    [owner, name, limit]
-  )
-  return result.rows
 }
 
 export async function getRepoComments(
@@ -229,37 +226,21 @@ export async function addComment(
   return commentResult.rows[0]
 }
 
-export async function deleteComment(
-  commentId: number,
-  userId: number
-): Promise<boolean> {
+export async function deleteComment(commentId: number, userId: number): Promise<boolean> {
   await initDb()
-  const result = await pool.query(
-    'DELETE FROM comments WHERE id = $1 AND user_id = $2',
-    [commentId, userId]
-  )
+  const result = await pool.query('DELETE FROM comments WHERE id = $1 AND user_id = $2', [
+    commentId,
+    userId,
+  ])
   return result.rowCount ? result.rowCount > 0 : false
-}
-
-export async function getRecentReputations(
-  limit = 20
-): Promise<ReputationEntry[]> {
-  await initDb()
-  const result = await pool.query(
-    `SELECT r.*, u.username, u.avatar_url
-     FROM reputation r
-     JOIN users u ON r.user_id = u.id
-     ORDER BY r.created_at DESC
-     LIMIT $1`,
-    [limit]
-  )
-  return result.rows
 }
 
 export async function searchRepos(
   query: string,
   limit = 10
-): Promise<{ repo_owner: string; repo_name: string; score: number; positive: number; negative: number }[]> {
+): Promise<
+  { repo_owner: string; repo_name: string; score: number; positive: number; negative: number }[]
+> {
   await initDb()
   const q = query.toLowerCase()
   // Match against "owner/repo" or just "owner" or just "repo"
@@ -278,19 +259,143 @@ export async function searchRepos(
   return result.rows
 }
 
-export async function getTopRepos(
-  limit = 10
-): Promise<{ repo_owner: string; repo_name: string; score: number; total: number }[]> {
+// Admin functions
+
+export async function isUserBanned(userId: number): Promise<boolean> {
   await initDb()
-  const result = await pool.query(
-    `SELECT repo_owner, repo_name,
-      SUM(CASE WHEN type = 'positive' THEN 1 ELSE -1 END) as score,
-      COUNT(*) as total
-     FROM reputation
-     GROUP BY repo_owner, repo_name
-     ORDER BY score DESC
-     LIMIT $1`,
-    [limit]
+  const result = await pool.query('SELECT banned_at FROM users WHERE id = $1', [userId])
+  return result.rows[0]?.banned_at != null
+}
+
+export async function banUser(userId: number, adminId: number, reason?: string): Promise<void> {
+  await initDb()
+  await pool.query('UPDATE users SET banned_at = CURRENT_TIMESTAMP WHERE id = $1', [userId])
+  await pool.query(
+    'INSERT INTO mod_log (admin_user_id, action, target_user_id, reason) VALUES ($1, $2, $3, $4)',
+    [adminId, 'ban', userId, reason || null]
   )
-  return result.rows
+}
+
+export async function unbanUser(userId: number, adminId: number): Promise<void> {
+  await initDb()
+  await pool.query('UPDATE users SET banned_at = NULL WHERE id = $1', [userId])
+  await pool.query(
+    'INSERT INTO mod_log (admin_user_id, action, target_user_id) VALUES ($1, $2, $3)',
+    [adminId, 'unban', userId]
+  )
+}
+
+export async function deleteCommentAdmin(
+  commentId: number,
+  adminId: number,
+  reason?: string
+): Promise<boolean> {
+  await initDb()
+  const result = await pool.query('DELETE FROM comments WHERE id = $1', [commentId])
+  if (result.rowCount && result.rowCount > 0) {
+    await pool.query(
+      'INSERT INTO mod_log (admin_user_id, action, target_comment_id, reason) VALUES ($1, $2, $3, $4)',
+      [adminId, 'delete_comment', commentId, reason || null]
+    )
+    return true
+  }
+  return false
+}
+
+export async function getAdminStats(): Promise<{
+  total_users: number
+  total_comments: number
+  total_votes: number
+  banned_users: number
+}> {
+  await initDb()
+  const result = await pool.query(`
+    SELECT
+      (SELECT COUNT(*) FROM users)::int as total_users,
+      (SELECT COUNT(*) FROM comments)::int as total_comments,
+      (SELECT COUNT(*) FROM reputation)::int as total_votes,
+      (SELECT COUNT(*) FROM users WHERE banned_at IS NOT NULL)::int as banned_users
+  `)
+  return result.rows[0]
+}
+
+export async function getAllUsers(
+  page = 1,
+  search?: string
+): Promise<{ users: User[]; total: number }> {
+  await initDb()
+  const limit = 20
+  const offset = (page - 1) * limit
+  const where = search ? `WHERE lower(username) LIKE $1` : ''
+  const params = search ? [`%${search.toLowerCase()}%`] : []
+
+  const countResult = await pool.query(`SELECT COUNT(*) as cnt FROM users ${where}`, params)
+  const total = parseInt(countResult.rows[0].cnt)
+
+  const result = await pool.query(
+    `SELECT * FROM users ${where} ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset]
+  )
+  return { users: result.rows, total }
+}
+
+export async function getAllComments(
+  page = 1,
+  search?: string
+): Promise<{ comments: CommentEntry[]; total: number }> {
+  await initDb()
+  const limit = 20
+  const offset = (page - 1) * limit
+  const where = search ? `WHERE lower(c.content) LIKE $1 OR lower(u.username) LIKE $1` : ''
+  const params = search ? [`%${search.toLowerCase()}%`] : []
+
+  const countResult = await pool.query(
+    `SELECT COUNT(*) as cnt FROM comments c JOIN users u ON c.user_id = u.id ${where}`,
+    params
+  )
+  const total = parseInt(countResult.rows[0].cnt)
+
+  const result = await pool.query(
+    `SELECT c.*, u.username, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id ${where} ORDER BY c.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset]
+  )
+  return { comments: result.rows, total }
+}
+
+export async function getModLog(page = 1): Promise<{ entries: any[]; total: number }> {
+  await initDb()
+  const limit = 20
+  const offset = (page - 1) * limit
+
+  const countResult = await pool.query('SELECT COUNT(*) as cnt FROM mod_log')
+  const total = parseInt(countResult.rows[0].cnt)
+
+  const result = await pool.query(
+    `SELECT m.*, u.username as admin_username, t.username as target_username
+     FROM mod_log m
+     JOIN users u ON m.admin_user_id = u.id
+     LEFT JOIN users t ON m.target_user_id = t.id
+     ORDER BY m.created_at DESC
+     LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  )
+  return { entries: result.rows, total }
+}
+
+export async function getBlockedWords(): Promise<string[]> {
+  await initDb()
+  const result = await pool.query('SELECT word FROM blocked_words ORDER BY word')
+  return result.rows.map((r: any) => r.word)
+}
+
+export async function addBlockedWord(word: string): Promise<void> {
+  await initDb()
+  await pool.query('INSERT INTO blocked_words (word) VALUES ($1) ON CONFLICT (word) DO NOTHING', [
+    word.toLowerCase().trim(),
+  ])
+}
+
+export async function removeBlockedWord(word: string): Promise<void> {
+  await initDb()
+  await pool.query('DELETE FROM blocked_words WHERE word = $1', [word.toLowerCase().trim()])
 }
