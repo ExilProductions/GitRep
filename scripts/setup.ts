@@ -86,6 +86,7 @@ function updateComposeFile(postgresPassword: string, jwtSecret: string, githubCl
       "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json",
       "--entrypoints.web.http.redirections.entrypoint.to=websecure",
       "--entrypoints.web.http.redirections.entrypoint.scheme=https",
+      "--entrypoints.web.forwardedheaders.insecure",
     ];
     compose.services.traefik.ports = ["80:80", "443:443"];
     compose.services.app.labels = [
