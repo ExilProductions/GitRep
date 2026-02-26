@@ -587,9 +587,9 @@ fastify.get('/api/admin/modlog', async (request, reply) => {
 })
 
 // Serve static frontend in production
-// In Docker: dist/server/index.js serves dist/index.html + dist/assets/
+// In Docker: dist-server/index.js serves dist/index.html + dist/assets/
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const staticRoot = path.join(__dirname, '..')
+const staticRoot = path.join(__dirname, '..', 'dist')
 
 await fastify.register(fastifyStatic, {
   root: staticRoot,
