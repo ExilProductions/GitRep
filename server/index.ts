@@ -114,6 +114,7 @@ fastify.get('/ws/repos/:owner/:repo', { websocket: true }, (socket, request) => 
         const entry = await addOrUpdateReputation(owner, repo, session.id, parsed.type)
         const reputation = await getRepoReputation(owner, repo)
         broadcastRepUpdate(owner, repo, reputation)
+        await notifyRepGiven(owner, repo, user.username, user.avatar_url, parsed.type, reputation.positive - reputation.negative)
         socket.send(JSON.stringify({ type: 'vote_ok', entry, userRep: { type: parsed.type } }))
       } else if (parsed.action === 'remove') {
         await deleteReputation(session.id, owner, repo)
@@ -348,7 +349,7 @@ fastify.post('/api/repos/:owner/:repo/rep', async (request, reply) => {
     const reputation = await getRepoReputation(owner, repo)
     broadcastRepUpdate(owner, repo, reputation)
 
-    notifyRepGiven(
+    await notifyRepGiven(
       owner,
       repo,
       user.username,
@@ -416,7 +417,7 @@ fastify.post('/api/repos/:owner/:repo/comments', async (request, reply) => {
     const comment = await addComment(owner, repo, session.id, parsed.content)
     const comments = await getRepoComments(owner, repo)
 
-    notifyComment(
+    await notifyComment(
       owner,
       repo,
       user.username,
