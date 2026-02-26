@@ -1,0 +1,296 @@
+import Fastify from 'fastify'
+import pg from 'pg'
+
+const { Pool } = pg
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+})
+
+let initialized = false
+
+async function initDb(): Promise<void> {
+  if (initialized) return
+
+  const client = await pool.connect()
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        github_id INTEGER UNIQUE NOT NULL,
+        username TEXT NOT NULL,
+        avatar_url TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE IF NOT EXISTS reputation (
+        id SERIAL PRIMARY KEY,
+        repo_owner TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('positive', 'negative')),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id),
+        UNIQUE(repo_owner, repo_name, user_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS comments (
+        id SERIAL PRIMARY KEY,
+        repo_owner TEXT NOT NULL,
+        repo_name TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_reputation_repo ON reputation(repo_owner, repo_name);
+      CREATE INDEX IF NOT EXISTS idx_reputation_user ON reputation(user_id);
+      CREATE INDEX IF NOT EXISTS idx_comments_repo ON comments(repo_owner, repo_name);
+      CREATE INDEX IF NOT EXISTS idx_comments_user ON comments(user_id);
+      CREATE INDEX IF NOT EXISTS idx_reputation_repo_search ON reputation(lower(repo_owner), lower(repo_name));
+    `)
+    initialized = true
+  } finally {
+    client.release()
+  }
+}
+
+export interface User {
+  id: number
+  github_id: number
+  username: string
+  avatar_url: string | null
+  created_at: string
+}
+
+export interface ReputationEntry {
+  id: number
+  repo_owner: string
+  repo_name: string
+  user_id: number
+  type: 'positive' | 'negative'
+  created_at: string
+  updated_at: string
+  username?: string
+  avatar_url?: string | null
+}
+
+export interface CommentEntry {
+  id: number
+  repo_owner: string
+  repo_name: string
+  user_id: number
+  content: string
+  created_at: string
+  username?: string
+  avatar_url?: string | null
+}
+
+export async function upsertUser(
+  githubId: number,
+  username: string,
+  avatarUrl: string | null
+): Promise<User> {
+  await initDb()
+  const result = await pool.query(
+    `INSERT INTO users (github_id, username, avatar_url)
+     VALUES ($1, $2, $3)
+     ON CONFLICT(github_id) DO UPDATE SET username = excluded.username, avatar_url = excluded.avatar_url
+     RETURNING *`,
+    [githubId, username, avatarUrl]
+  )
+  return result.rows[0]
+}
+
+export async function getUserById(id: number): Promise<User | undefined> {
+  await initDb()
+  const result = await pool.query('SELECT * FROM users WHERE id = $1', [id])
+  return result.rows[0]
+}
+
+export async function getRepoReputation(
+  owner: string,
+  name: string
+): Promise<{ positive: number; negative: number }> {
+  await initDb()
+  const result = await pool.query(
+    `SELECT
+      COALESCE(SUM(CASE WHEN type = 'positive' THEN 1 ELSE 0 END), 0) as positive,
+      COALESCE(SUM(CASE WHEN type = 'negative' THEN 1 ELSE 0 END), 0) as negative
+     FROM reputation WHERE repo_owner = $1 AND repo_name = $2`,
+    [owner, name]
+  )
+  return result.rows[0]
+}
+
+export async function getUserRepForRepo(
+  userId: number,
+  owner: string,
+  name: string
+): Promise<ReputationEntry | undefined> {
+  await initDb()
+  const result = await pool.query(
+    'SELECT * FROM reputation WHERE user_id = $1 AND repo_owner = $2 AND repo_name = $3',
+    [userId, owner, name]
+  )
+  return result.rows[0]
+}
+
+export async function addOrUpdateReputation(
+  owner: string,
+  name: string,
+  userId: number,
+  type: 'positive' | 'negative'
+): Promise<ReputationEntry> {
+  await initDb()
+  await pool.query(
+    `INSERT INTO reputation (repo_owner, repo_name, user_id, type)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT(repo_owner, repo_name, user_id)
+     DO UPDATE SET type = excluded.type, updated_at = CURRENT_TIMESTAMP`,
+    [owner, name, userId, type]
+  )
+
+  const result = await pool.query(
+    'SELECT r.*, u.username, u.avatar_url FROM reputation r JOIN users u ON r.user_id = u.id WHERE r.user_id = $1 AND r.repo_owner = $2 AND r.repo_name = $3',
+    [userId, owner, name]
+  )
+  return result.rows[0]
+}
+
+export async function deleteReputation(
+  userId: number,
+  owner: string,
+  name: string
+): Promise<void> {
+  await initDb()
+  await pool.query(
+    'DELETE FROM reputation WHERE user_id = $1 AND repo_owner = $2 AND repo_name = $3',
+    [userId, owner, name]
+  )
+}
+
+export async function getRepoVotes(
+  owner: string,
+  name: string,
+  limit = 100
+): Promise<ReputationEntry[]> {
+  await initDb()
+  const result = await pool.query(
+    `SELECT r.*, u.username, u.avatar_url
+     FROM reputation r
+     JOIN users u ON r.user_id = u.id
+     WHERE r.repo_owner = $1 AND r.repo_name = $2
+     ORDER BY r.created_at DESC
+     LIMIT $3`,
+    [owner, name, limit]
+  )
+  return result.rows
+}
+
+export async function getRepoComments(
+  owner: string,
+  name: string,
+  limit = 100
+): Promise<CommentEntry[]> {
+  await initDb()
+  const result = await pool.query(
+    `SELECT c.*, u.username, u.avatar_url
+     FROM comments c
+     JOIN users u ON c.user_id = u.id
+     WHERE c.repo_owner = $1 AND c.repo_name = $2
+     ORDER BY c.created_at DESC
+     LIMIT $3`,
+    [owner, name, limit]
+  )
+  return result.rows
+}
+
+export async function addComment(
+  owner: string,
+  name: string,
+  userId: number,
+  content: string
+): Promise<CommentEntry> {
+  await initDb()
+  const result = await pool.query(
+    `INSERT INTO comments (repo_owner, repo_name, user_id, content)
+     VALUES ($1, $2, $3, $4)
+     RETURNING *`,
+    [owner, name, userId, content]
+  )
+
+  const commentResult = await pool.query(
+    'SELECT c.*, u.username, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.id = $1',
+    [result.rows[0].id]
+  )
+  return commentResult.rows[0]
+}
+
+export async function deleteComment(
+  commentId: number,
+  userId: number
+): Promise<boolean> {
+  await initDb()
+  const result = await pool.query(
+    'DELETE FROM comments WHERE id = $1 AND user_id = $2',
+    [commentId, userId]
+  )
+  return result.rowCount ? result.rowCount > 0 : false
+}
+
+export async function getRecentReputations(
+  limit = 20
+): Promise<ReputationEntry[]> {
+  await initDb()
+  const result = await pool.query(
+    `SELECT r.*, u.username, u.avatar_url
+     FROM reputation r
+     JOIN users u ON r.user_id = u.id
+     ORDER BY r.created_at DESC
+     LIMIT $1`,
+    [limit]
+  )
+  return result.rows
+}
+
+export async function searchRepos(
+  query: string,
+  limit = 10
+): Promise<{ repo_owner: string; repo_name: string; score: number; positive: number; negative: number }[]> {
+  await initDb()
+  const q = query.toLowerCase()
+  // Match against "owner/repo" or just "owner" or just "repo"
+  const result = await pool.query(
+    `SELECT repo_owner, repo_name,
+      SUM(CASE WHEN type = 'positive' THEN 1 ELSE 0 END)::int as positive,
+      SUM(CASE WHEN type = 'negative' THEN 1 ELSE 0 END)::int as negative,
+      SUM(CASE WHEN type = 'positive' THEN 1 ELSE -1 END)::int as score
+     FROM reputation
+     WHERE lower(repo_owner || '/' || repo_name) LIKE $1
+     GROUP BY repo_owner, repo_name
+     ORDER BY COUNT(*) DESC
+     LIMIT $2`,
+    [`%${q}%`, limit]
+  )
+  return result.rows
+}
+
+export async function getTopRepos(
+  limit = 10
+): Promise<{ repo_owner: string; repo_name: string; score: number; total: number }[]> {
+  await initDb()
+  const result = await pool.query(
+    `SELECT repo_owner, repo_name,
+      SUM(CASE WHEN type = 'positive' THEN 1 ELSE -1 END) as score,
+      COUNT(*) as total
+     FROM reputation
+     GROUP BY repo_owner, repo_name
+     ORDER BY score DESC
+     LIMIT $1`,
+    [limit]
+  )
+  return result.rows
+}
