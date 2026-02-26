@@ -26,6 +26,14 @@ function checkDocker() {
       process.exit(1);
     }
   }
+
+  const templatePath = join(process.cwd(), "docker-compose.yml.tpl");
+  try {
+    readFileSync(templatePath);
+  } catch {
+    console.error("Error: docker-compose.yml.tpl template file not found.");
+    process.exit(1);
+  }
 }
 
 function generatePassword() {
@@ -48,9 +56,10 @@ async function prompt(question: string): Promise<string> {
 }
 
 function updateComposeFile(postgresPassword: string, jwtSecret: string, githubClientId: string, githubClientSecret: string, domain: string, acmeEmail: string, discordWebhookUrl: string) {
+  const templatePath = join(process.cwd(), "docker-compose.yml.tpl");
   const composePath = join(process.cwd(), "docker-compose.yml");
-  const composeContent = readFileSync(composePath, "utf-8");
-  const compose = yaml.parse(composeContent);
+  const templateContent = readFileSync(templatePath, "utf-8");
+  const compose = yaml.parse(templateContent);
 
   const isLocalhost = domain.startsWith("localhost");
   const protocol = isLocalhost ? "http" : "https";
