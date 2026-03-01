@@ -306,9 +306,24 @@ fastify.get('/api/auth/me', async (request, reply) => {
     return { user: null }
   }
 
-  // Always check DB for fresh admin status
-  const adminStatus = await isUserAdmin(session.id)
-  return { user: { ...session, is_admin: adminStatus } }
+  // Always fetch fresh user data from DB — JWT only trusted for the user id
+  const user = await getUserById(session.id)
+  if (!user) {
+    reply.clearCookie('gitrep_session', { path: '/' })
+    return { user: null }
+  }
+
+  const banned = await isUserBanned(user.id)
+
+  return {
+    user: {
+      id: user.id,
+      username: user.username,
+      avatar_url: user.avatar_url,
+      is_admin: user.is_admin,
+      is_banned: banned,
+    },
+  }
 })
 
 fastify.get('/api/search', async (request, reply) => {
@@ -489,7 +504,7 @@ fastify.delete('/api/repos/:owner/:repo/comments', async (request, reply) => {
     return { success: true }
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return reply.status(400).send({ error: 'Invalid input', details: error.errors })
+      return reply.status(400).send({ error: 'Invalid input' })
     }
     return reply.status(500).send({ error: 'Internal server error' })
   }
