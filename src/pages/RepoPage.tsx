@@ -15,9 +15,9 @@ interface RepoData {
     id: number
     content: string
     created_at: string
-    user_id: number
     username: string
     avatar_url: string | null
+    is_owner: boolean
   }>
   userRep: {
     type: 'positive' | 'negative'

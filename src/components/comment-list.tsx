@@ -5,9 +5,9 @@ interface Comment {
   id: number
   content: string
   created_at: string
-  user_id: number
   username: string
   avatar_url: string | null
+  is_owner: boolean
 }
 
 interface CommentListProps {
@@ -78,7 +78,7 @@ export function CommentList({
                 <time className="text-xs text-muted-foreground">
                   {new Date(c.created_at).toLocaleDateString()}
                 </time>
-                {user && user.id === c.user_id && (
+                {user && c.is_owner && (
                   <button
                     onClick={() => handleDelete(c.id)}
                     disabled={deletingId === c.id}

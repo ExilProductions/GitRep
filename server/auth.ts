@@ -38,7 +38,6 @@ export function getGitHubClientSecret(): string {
 
 export interface SessionUser {
   id: number
-  github_id: number
   username: string
   avatar_url: string | null
   is_admin?: boolean
@@ -47,7 +46,6 @@ export interface SessionUser {
 export async function createSession(user: SessionUser): Promise<string> {
   const token = await new SignJWT({
     id: user.id,
-    github_id: user.github_id,
     username: user.username,
     avatar_url: user.avatar_url,
     is_admin: user.is_admin || false,
@@ -67,7 +65,6 @@ export async function getSession(token: string | undefined): Promise<SessionUser
     const { payload } = await jwtVerify(token, getJwtSecretKey())
     return {
       id: payload.id as number,
-      github_id: payload.github_id as number,
       username: payload.username as string,
       avatar_url: payload.avatar_url as string | null,
       is_admin: payload.is_admin as boolean | undefined,

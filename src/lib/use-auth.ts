@@ -4,10 +4,10 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json())
 
 export interface AuthUser {
   id: number
-  github_id: number
   username: string
   avatar_url: string | null
   is_admin: boolean
+  is_banned: boolean
 }
 
 export async function handleUnauthorized() {

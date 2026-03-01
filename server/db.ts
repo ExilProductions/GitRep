@@ -103,34 +103,19 @@ async function initDb(): Promise<void> {
 
 export interface User {
   id: number
-  github_id: number
   username: string
   avatar_url: string | null
   created_at: string
   is_admin: boolean
 }
 
-export interface ReputationEntry {
-  id: number
-  repo_owner: string
-  repo_name: string
-  user_id: number
-  type: 'positive' | 'negative'
-  created_at: string
-  updated_at: string
-  username?: string
-  avatar_url?: string | null
-}
-
 export interface CommentEntry {
   id: number
-  repo_owner: string
-  repo_name: string
-  user_id: number
   content: string
   created_at: string
   username?: string
   avatar_url?: string | null
+  is_owner?: boolean
 }
 
 export async function upsertUser(
@@ -148,7 +133,7 @@ export async function upsertUser(
     `INSERT INTO users (github_id, username, avatar_url, is_admin)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT(github_id) DO UPDATE SET username = excluded.username, avatar_url = excluded.avatar_url
-     RETURNING *`,
+     RETURNING id, username, avatar_url, created_at, is_admin`,
     [githubId, username, avatarUrl, isFirstUser]
   )
   return result.rows[0]
@@ -162,7 +147,10 @@ export async function isUserAdmin(userId: number): Promise<boolean> {
 
 export async function getUserById(id: number): Promise<User | undefined> {
   await initDb()
-  const result = await pool.query('SELECT * FROM users WHERE id = $1', [id])
+  const result = await pool.query(
+    'SELECT id, username, avatar_url, created_at, is_admin FROM users WHERE id = $1',
+    [id]
+  )
   return result.rows[0]
 }
 
@@ -185,10 +173,10 @@ export async function getUserRepForRepo(
   userId: number,
   owner: string,
   name: string
-): Promise<ReputationEntry | undefined> {
+): Promise<{ type: 'positive' | 'negative' } | undefined> {
   await initDb()
   const result = await pool.query(
-    'SELECT * FROM reputation WHERE user_id = $1 AND repo_owner = $2 AND repo_name = $3',
+    'SELECT type FROM reputation WHERE user_id = $1 AND repo_owner = $2 AND repo_name = $3',
     [userId, owner, name]
   )
   return result.rows[0]
@@ -199,7 +187,7 @@ export async function addOrUpdateReputation(
   name: string,
   userId: number,
   type: 'positive' | 'negative'
-): Promise<ReputationEntry> {
+): Promise<{ type: 'positive' | 'negative' }> {
   await initDb()
   await pool.query(
     `INSERT INTO reputation (repo_owner, repo_name, user_id, type)
@@ -209,11 +197,7 @@ export async function addOrUpdateReputation(
     [owner, name, userId, type]
   )
 
-  const result = await pool.query(
-    'SELECT r.*, u.username, u.avatar_url FROM reputation r JOIN users u ON r.user_id = u.id WHERE r.user_id = $1 AND r.repo_owner = $2 AND r.repo_name = $3',
-    [userId, owner, name]
-  )
-  return result.rows[0]
+  return { type }
 }
 
 export async function deleteReputation(userId: number, owner: string, name: string): Promise<void> {
@@ -227,17 +211,19 @@ export async function deleteReputation(userId: number, owner: string, name: stri
 export async function getRepoComments(
   owner: string,
   name: string,
+  currentUserId?: number,
   limit = 100
 ): Promise<CommentEntry[]> {
   await initDb()
   const result = await pool.query(
-    `SELECT c.*, u.username, u.avatar_url
+    `SELECT c.id, c.content, c.created_at, u.username, u.avatar_url,
+       CASE WHEN c.user_id = $3 THEN true ELSE false END as is_owner
      FROM comments c
      JOIN users u ON c.user_id = u.id
      WHERE c.repo_owner = $1 AND c.repo_name = $2
      ORDER BY c.created_at DESC
-     LIMIT $3`,
-    [owner, name, limit]
+     LIMIT $4`,
+    [owner, name, currentUserId || null, limit]
   )
   return result.rows
 }
@@ -252,12 +238,13 @@ export async function addComment(
   const result = await pool.query(
     `INSERT INTO comments (repo_owner, repo_name, user_id, content)
      VALUES ($1, $2, $3, $4)
-     RETURNING *`,
+     RETURNING id`,
     [owner, name, userId, content]
   )
 
   const commentResult = await pool.query(
-    'SELECT c.*, u.username, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.id = $1',
+    `SELECT c.id, c.content, c.created_at, u.username, u.avatar_url, true as is_owner
+     FROM comments c JOIN users u ON c.user_id = u.id WHERE c.id = $1`,
     [result.rows[0].id]
   )
   return commentResult.rows[0]
@@ -370,7 +357,7 @@ export async function getAllUsers(
   const total = parseInt(countResult.rows[0].cnt)
 
   const result = await pool.query(
-    `SELECT * FROM users ${where} ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    `SELECT id, username, avatar_url, created_at, banned_at, is_admin FROM users ${where} ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, limit, offset]
   )
   return { users: result.rows, total }
@@ -393,7 +380,7 @@ export async function getAllComments(
   const total = parseInt(countResult.rows[0].cnt)
 
   const result = await pool.query(
-    `SELECT c.*, u.username, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id ${where} ORDER BY c.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    `SELECT c.id, c.repo_owner, c.repo_name, c.content, c.created_at, u.username, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id ${where} ORDER BY c.created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, limit, offset]
   )
   return { comments: result.rows, total }
@@ -408,7 +395,8 @@ export async function getModLog(page = 1): Promise<{ entries: any[]; total: numb
   const total = parseInt(countResult.rows[0].cnt)
 
   const result = await pool.query(
-    `SELECT m.*, u.username as admin_username, t.username as target_username
+    `SELECT m.id, m.action, m.target_comment_id, m.reason, m.created_at,
+       u.username as admin_username, t.username as target_username
      FROM mod_log m
      JOIN users u ON m.admin_user_id = u.id
      LEFT JOIN users t ON m.target_user_id = t.id

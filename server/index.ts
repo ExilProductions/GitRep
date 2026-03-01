@@ -135,7 +135,7 @@ fastify.get('/ws/repos/:owner/:repo', { websocket: true }, (socket, request) => 
           socket.send(JSON.stringify({ type: 'error', error: 'Repository not found on GitHub' }))
           return
         }
-        const entry = await addOrUpdateReputation(owner, repo, session.id, parsed.type)
+        await addOrUpdateReputation(owner, repo, session.id, parsed.type)
         const reputation = await getRepoReputation(owner, repo)
         broadcastRepUpdate(owner, repo, reputation)
         await notifyRepGiven(
@@ -146,12 +146,12 @@ fastify.get('/ws/repos/:owner/:repo', { websocket: true }, (socket, request) => 
           parsed.type,
           reputation.positive - reputation.negative
         )
-        socket.send(JSON.stringify({ type: 'vote_ok', entry, userRep: { type: parsed.type } }))
+        socket.send(JSON.stringify({ type: 'vote_ok', userRep: { type: parsed.type } }))
       } else if (parsed.action === 'remove') {
         await deleteReputation(session.id, owner, repo)
         const reputation = await getRepoReputation(owner, repo)
         broadcastRepUpdate(owner, repo, reputation)
-        socket.send(JSON.stringify({ type: 'vote_ok', entry: null, userRep: null }))
+        socket.send(JSON.stringify({ type: 'vote_ok', userRep: null }))
       }
     } catch {
       socket.send(JSON.stringify({ type: 'error', error: 'Invalid message' }))
@@ -273,7 +273,6 @@ async function authCallbackHandler(request: FastifyRequest, reply: FastifyReply)
 
     const token = await createSession({
       id: user.id,
-      github_id: user.github_id,
       username: user.username,
       avatar_url: user.avatar_url,
       is_admin: user.is_admin,
@@ -324,11 +323,11 @@ fastify.get('/api/search', async (request, reply) => {
 fastify.get('/api/repos/:owner/:repo', async (request, reply) => {
   const { owner, repo } = request.params as { owner: string; repo: string }
 
-  const reputation = await getRepoReputation(owner, repo)
-  const comments = await getRepoComments(owner, repo)
-
   const token = request.cookies.gitrep_session
   const session = await getSession(token)
+
+  const reputation = await getRepoReputation(owner, repo)
+  const comments = await getRepoComments(owner, repo, session?.id)
 
   let userRep = null
   if (session) {
@@ -370,7 +369,7 @@ fastify.post('/api/repos/:owner/:repo/rep', async (request, reply) => {
     const body = request.body as Record<string, unknown>
     const parsed = repSchema.parse(body)
 
-    const entry = await addOrUpdateReputation(owner, repo, session.id, parsed.type)
+    await addOrUpdateReputation(owner, repo, session.id, parsed.type)
     const reputation = await getRepoReputation(owner, repo)
     broadcastRepUpdate(owner, repo, reputation)
 
@@ -383,10 +382,10 @@ fastify.post('/api/repos/:owner/:repo/rep', async (request, reply) => {
       reputation.positive - reputation.negative
     )
 
-    return { entry }
+    return { userRep: { type: parsed.type }, reputation }
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return reply.status(400).send({ error: 'Invalid input', details: error.errors })
+      return reply.status(400).send({ error: 'Invalid input' })
     }
     console.error('POST /rep error:', error)
     return reply.status(500).send({ error: 'Internal server error' })
@@ -444,7 +443,7 @@ fastify.post('/api/repos/:owner/:repo/comments', async (request, reply) => {
     }
 
     const comment = await addComment(owner, repo, session.id, parsed.content)
-    const comments = await getRepoComments(owner, repo)
+    const comments = await getRepoComments(owner, repo, session.id)
 
     await notifyComment(
       owner,
@@ -458,7 +457,7 @@ fastify.post('/api/repos/:owner/:repo/comments', async (request, reply) => {
     return { comment }
   } catch (error) {
     if (error instanceof z.ZodError) {
-      return reply.status(400).send({ error: 'Invalid input', details: error.errors })
+      return reply.status(400).send({ error: 'Invalid input' })
     }
     console.error('POST /comments error:', error)
     return reply.status(500).send({ error: 'Internal server error' })
