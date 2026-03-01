@@ -72,28 +72,8 @@ async function initDb(): Promise<void> {
       );
     `)
 
-    // Auto-migrate: if ADMIN_USERS env var is set, promote those users in the DB
-    const envAdmins = process.env.ADMIN_USERS || ''
-    const adminUsernames = envAdmins
-      .split(',')
-      .map((u) => u.trim().toLowerCase())
-      .filter(Boolean)
-    if (adminUsernames.length > 0) {
-      for (const adminName of adminUsernames) {
-        await client.query(
-          `UPDATE users SET is_admin = TRUE WHERE lower(username) = $1 AND is_admin = FALSE`,
-          [adminName]
-        )
-      }
-    }
-
-    // Auto-admin: if no admin exists at all, promote the first registered user
-    const adminCheck = await client.query('SELECT COUNT(*) as cnt FROM users WHERE is_admin = TRUE')
-    if (parseInt(adminCheck.rows[0].cnt) === 0) {
-      await client.query(
-        `UPDATE users SET is_admin = TRUE WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)`
-      )
-    }
+    // Auto-admin: user with id 1 is always admin
+    await client.query(`UPDATE users SET is_admin = TRUE WHERE id = 1 AND is_admin = FALSE`)
 
     initialized = true
   } finally {
@@ -125,18 +105,22 @@ export async function upsertUser(
 ): Promise<User> {
   await initDb()
 
-  // Check if any users exist before inserting (for first-user-is-admin logic)
-  const countResult = await pool.query('SELECT COUNT(*) as cnt FROM users')
-  const isFirstUser = parseInt(countResult.rows[0].cnt) === 0
-
   const result = await pool.query(
-    `INSERT INTO users (github_id, username, avatar_url, is_admin)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO users (github_id, username, avatar_url)
+     VALUES ($1, $2, $3)
      ON CONFLICT(github_id) DO UPDATE SET username = excluded.username, avatar_url = excluded.avatar_url
      RETURNING id, username, avatar_url, created_at, is_admin`,
-    [githubId, username, avatarUrl, isFirstUser]
+    [githubId, username, avatarUrl]
   )
-  return result.rows[0]
+
+  // User with id 1 is always admin
+  const user = result.rows[0]
+  if (user.id === 1 && !user.is_admin) {
+    await pool.query('UPDATE users SET is_admin = TRUE WHERE id = 1')
+    user.is_admin = true
+  }
+
+  return user
 }
 
 export async function isUserAdmin(userId: number): Promise<boolean> {
