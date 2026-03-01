@@ -27,6 +27,25 @@ export default function Home() {
   }
 
   useEffect(() => {
+    const script = document.createElement('script')
+    script.src = 'https://storage.ko-fi.com/cdn/scripts/overlay-widget.js'
+    script.onload = () => {
+      ;(window as any).kofiWidgetOverlay.draw('exilproductions', {
+        type: 'floating-chat',
+        'floating-chat.donateButton.text': 'Support me',
+        'floating-chat.donateButton.background-color': '#323842',
+        'floating-chat.donateButton.text-color': '#fff',
+      })
+    }
+    document.body.appendChild(script)
+    return () => {
+      document.body.removeChild(script)
+      const frame = document.getElementById('kofi-overlay-frame')
+      if (frame) frame.remove()
+    }
+  }, [])
+
+  useEffect(() => {
     const trimmed = value.trim().replace(/^https?:\/\/github\.com\//, '')
     if (trimmed.length < 2) {
       setResults([])
