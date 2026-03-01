@@ -52,6 +52,7 @@ async function initDb(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_reputation_repo_search ON reputation(lower(repo_owner), lower(repo_name));
 
       ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMP DEFAULT NULL;
+      ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE;
 
       CREATE TABLE IF NOT EXISTS blocked_words (
         id SERIAL PRIMARY KEY,
@@ -70,6 +71,30 @@ async function initDb(): Promise<void> {
         FOREIGN KEY (admin_user_id) REFERENCES users(id)
       );
     `)
+
+    // Auto-migrate: if ADMIN_USERS env var is set, promote those users in the DB
+    const envAdmins = process.env.ADMIN_USERS || ''
+    const adminUsernames = envAdmins
+      .split(',')
+      .map((u) => u.trim().toLowerCase())
+      .filter(Boolean)
+    if (adminUsernames.length > 0) {
+      for (const adminName of adminUsernames) {
+        await client.query(
+          `UPDATE users SET is_admin = TRUE WHERE lower(username) = $1 AND is_admin = FALSE`,
+          [adminName]
+        )
+      }
+    }
+
+    // Auto-admin: if no admin exists at all, promote the first registered user
+    const adminCheck = await client.query('SELECT COUNT(*) as cnt FROM users WHERE is_admin = TRUE')
+    if (parseInt(adminCheck.rows[0].cnt) === 0) {
+      await client.query(
+        `UPDATE users SET is_admin = TRUE WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)`
+      )
+    }
+
     initialized = true
   } finally {
     client.release()
@@ -82,6 +107,7 @@ export interface User {
   username: string
   avatar_url: string | null
   created_at: string
+  is_admin: boolean
 }
 
 export interface ReputationEntry {
@@ -113,14 +139,25 @@ export async function upsertUser(
   avatarUrl: string | null
 ): Promise<User> {
   await initDb()
+
+  // Check if any users exist before inserting (for first-user-is-admin logic)
+  const countResult = await pool.query('SELECT COUNT(*) as cnt FROM users')
+  const isFirstUser = parseInt(countResult.rows[0].cnt) === 0
+
   const result = await pool.query(
-    `INSERT INTO users (github_id, username, avatar_url)
-     VALUES ($1, $2, $3)
+    `INSERT INTO users (github_id, username, avatar_url, is_admin)
+     VALUES ($1, $2, $3, $4)
      ON CONFLICT(github_id) DO UPDATE SET username = excluded.username, avatar_url = excluded.avatar_url
      RETURNING *`,
-    [githubId, username, avatarUrl]
+    [githubId, username, avatarUrl, isFirstUser]
   )
   return result.rows[0]
+}
+
+export async function isUserAdmin(userId: number): Promise<boolean> {
+  await initDb()
+  const result = await pool.query('SELECT is_admin FROM users WHERE id = $1', [userId])
+  return result.rows[0]?.is_admin === true
 }
 
 export async function getUserById(id: number): Promise<User | undefined> {

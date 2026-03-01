@@ -20,6 +20,7 @@ import {
   deleteComment,
   searchRepos,
   isUserBanned,
+  isUserAdmin,
   banUser,
   unbanUser,
   deleteCommentAdmin,
@@ -36,7 +37,6 @@ import {
   getSession,
   getGitHubClientId,
   getGitHubClientSecret,
-  isAdmin,
   type SessionUser,
 } from './auth.js'
 import { checkComment } from './automod.js'
@@ -276,6 +276,7 @@ async function authCallbackHandler(request: FastifyRequest, reply: FastifyReply)
       github_id: user.github_id,
       username: user.username,
       avatar_url: user.avatar_url,
+      is_admin: user.is_admin,
     })
 
     reply.setCookie('gitrep_session', token, {
@@ -306,7 +307,9 @@ fastify.get('/api/auth/me', async (request, reply) => {
     return { user: null }
   }
 
-  return { user: { ...session, is_admin: session.is_admin || false } }
+  // Always check DB for fresh admin status
+  const adminStatus = await isUserAdmin(session.id)
+  return { user: { ...session, is_admin: adminStatus } }
 })
 
 fastify.get('/api/search', async (request, reply) => {
@@ -493,14 +496,19 @@ fastify.delete('/api/repos/:owner/:repo/comments', async (request, reply) => {
   }
 })
 
-// Admin helper
+// Admin helper - checks DB for fresh admin status
 async function requireAdmin(
   request: FastifyRequest,
   reply: FastifyReply
 ): Promise<SessionUser | null> {
   const token = request.cookies.gitrep_session
   const session = await getSession(token)
-  if (!session || !session.is_admin) {
+  if (!session) {
+    reply.status(403).send({ error: 'Forbidden' })
+    return null
+  }
+  const adminStatus = await isUserAdmin(session.id)
+  if (!adminStatus) {
     reply.status(403).send({ error: 'Forbidden' })
     return null
   }

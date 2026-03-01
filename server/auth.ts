@@ -36,15 +36,6 @@ export function getGitHubClientSecret(): string {
   return GITHUB_CLIENT_SECRET
 }
 
-export function isAdmin(username: string): boolean {
-  const admins = process.env.ADMIN_USERS || ''
-  return admins
-    .split(',')
-    .map((u) => u.trim().toLowerCase())
-    .filter(Boolean)
-    .includes(username.toLowerCase())
-}
-
 export interface SessionUser {
   id: number
   github_id: number
@@ -59,7 +50,7 @@ export async function createSession(user: SessionUser): Promise<string> {
     github_id: user.github_id,
     username: user.username,
     avatar_url: user.avatar_url,
-    is_admin: isAdmin(user.username),
+    is_admin: user.is_admin || false,
   })
     .setProtectedHeader({ alg: 'HS256' })
     .setExpirationTime('7d')
