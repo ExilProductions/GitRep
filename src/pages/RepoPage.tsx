@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, Navigate } from 'react-router-dom'
 import useSWR from 'swr'
 import { useAuth } from '@/lib/use-auth'
 import { useRepoWs } from '@/lib/use-repo-ws'
@@ -75,6 +75,10 @@ export default function RepoPage() {
     onVoteOk: handleVoteOk,
     onError: handleWsError,
   })
+
+  if (user?.is_banned) {
+    return <Navigate to="/banned" replace />
+  }
 
   if (!owner || !repo) {
     return null

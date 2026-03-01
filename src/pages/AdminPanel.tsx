@@ -22,6 +22,10 @@ export default function AdminPanel() {
     )
   }
 
+  if (user?.is_banned) {
+    return <Navigate to="/banned" replace />
+  }
+
   if (!user?.is_admin) {
     return <Navigate to="/" replace />
   }

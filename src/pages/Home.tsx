@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Navigate, Link } from 'react-router-dom'
 import logo from '@/assets/gitrep-icon.png'
 import { useAuth } from '@/lib/use-auth'
 import { Input } from '@/components/ui/input'
@@ -21,6 +21,10 @@ export default function Home() {
   const navigate = useNavigate()
   const { user, isLoading, login, logout } = useAuth()
   const abortRef = useRef<AbortController | null>(null)
+
+  if (user?.is_banned) {
+    return <Navigate to="/banned" replace />
+  }
 
   useEffect(() => {
     const trimmed = value.trim().replace(/^https?:\/\/github\.com\//, '')
