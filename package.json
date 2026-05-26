@@ -63,13 +63,5 @@
     "vite": "^6.0.0",
     "yaml": "^2.7.1"
   },
-  "pnpm": {
-    "overrides": {
-      "@types/react": "19.2.7",
-      "@types/react-dom": "19.2.3"
-    },
-    "onlyBuiltDependencies": [
-      "sharp"
-    ]
-  }
+  "packageManager": "pnpm@11.3.0"
 }
